@@ -136,6 +136,53 @@ def ocr_pdf_page(page: fitz.Page, page_number: int = 0, dpi: int = 300) -> OCRRe
     return ocr_image(image, page_number=page_number, dpi=dpi)
 
 
+def ocr_pdf_page_regions(page: fitz.Page, rects: List[tuple], page_number: int = 0, dpi: int = 300) -> List[OCRResult]:
+    """
+    Renders the page, but crops to specific rectangles and runs OCR on those crops.
+    The resulting bounding boxes in OCRResult are offset back to full-page pixel coordinates.
+
+    Args:
+        page: PyMuPDF Page object.
+        rects: List of (x0, y0, x1, y1) tuples in PDF points.
+        page_number: 0-based page index.
+        dpi: Rendering resolution.
+
+    Returns:
+        List of OCRResult objects (one per region).
+    """
+    full_image = render_page_to_image(page, dpi=dpi)
+    scale = dpi / 72.0
+    
+    results = []
+    for rect in rects:
+        # Convert PDF points to pixels for cropping
+        left = int(rect[0] * scale)
+        top = int(rect[1] * scale)
+        right = int(rect[2] * scale)
+        bottom = int(rect[3] * scale)
+        
+        # Ensure within bounds
+        left = max(0, left)
+        top = max(0, top)
+        right = min(full_image.width, right)
+        bottom = min(full_image.height, bottom)
+        
+        if right <= left or bottom <= top:
+            continue
+            
+        crop_img = full_image.crop((left, top, right, bottom))
+        crop_ocr = ocr_image(crop_img, page_number=page_number, dpi=dpi)
+        
+        # Offset the words back to full-page pixel coordinates
+        for word in crop_ocr.words:
+            word.left += left
+            word.top += top
+            
+        results.append(crop_ocr)
+        
+    return results
+
+
 def find_word_boxes_for_match(match_text: str, ocr_result: OCRResult) -> List[OCRWord]:
     """
     Finds OCR word bounding boxes that correspond to a detected PII match.

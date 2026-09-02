@@ -180,11 +180,16 @@ with st.sidebar:
 
     redaction_mode = st.radio(
         "Redaction Method",
-        options=["mask", "full"],
-        format_func=lambda x: "Partial Masking (081****5678)" if x == "mask" else "Full Redaction ([REDACTED])",
+        options=["mask", "full", "tokenize"],
+        format_func=lambda x: {
+            "mask": "Partial Masking (081****5678)",
+            "full": "Full Redaction ([REDACTED])",
+            "tokenize": "Pseudo-anonymization ([EMP_001])",
+        }[x],
         index=0,
         help="Partial Masking: masks intermediate characters for internal use.\n\n"
-             "Full Redaction: replaces values with placeholders for external distribution.",
+             "Full Redaction: replaces values with placeholders for external distribution.\n\n"
+             "Pseudo-anonymization: consistent tokenized identifiers across the document.",
     )
 
     st.markdown("---")
@@ -194,6 +199,40 @@ with st.sidebar:
         value=True,
         help="Named Entity Recognition for detecting person names across all document content.",
     )
+
+    st.markdown("---")
+    st.markdown("### Role-Based Policy")
+
+    from redaction_policy import (
+        POLICY_PROFILES, POLICY_LABELS, ALL_PII_TYPES,
+        PII_TYPE_LABELS, MODE_OPTIONS, MODE_LABELS, get_policy,
+    )
+
+    policy_options = list(POLICY_LABELS.keys())
+    selected_policy = st.selectbox(
+        "Access Role",
+        options=policy_options,
+        format_func=lambda x: POLICY_LABELS[x],
+        index=0,
+        help="Select an organizational role to apply preset field-level redaction policies.",
+    )
+
+    active_policy = None
+    if selected_policy == "custom":
+        st.caption("Configure per-field redaction mode:")
+        custom_policy = {}
+        for pii_type in ALL_PII_TYPES:
+            custom_policy[pii_type] = st.selectbox(
+                PII_TYPE_LABELS[pii_type],
+                options=MODE_OPTIONS,
+                format_func=lambda x: MODE_LABELS[x],
+                index=1,  # default to mask
+                key=f"policy_{pii_type}",
+            )
+        active_policy = custom_policy
+    elif selected_policy != "hr_manager":
+        # hr_manager is effectively the default (no override needed for mask mode)
+        active_policy = get_policy(selected_policy)
 
     st.markdown("---")
     st.markdown("### Test Dataset Generator")
@@ -238,8 +277,9 @@ with st.sidebar:
     st.markdown("---")
     st.markdown(
         "<div style='color:#64748b;font-size:0.75rem;line-height:1.4;'>"
-        "<strong>PII Redaction System v1.1</strong><br>"
+        "<strong>PII Redaction System v1.2</strong><br>"
         "CSV + PDF Hybrid Pipeline<br>"
+        "Role-Based Policies + Tokenization<br>"
         "Internal Testing Environment"
         "</div>",
         unsafe_allow_html=True,
@@ -322,11 +362,13 @@ def _render_pdf_page_as_image(pdf_bytes: bytes, page_index: int, dpi: int = 120)
     """Renders a PDF page to a PIL Image for Streamlit preview."""
     import fitz
     from PIL import Image
+    import io
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     page = doc[page_index]
     mat = fitz.Matrix(dpi / 72, dpi / 72)
     pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
-    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+    img_bytes = pix.tobytes("png")
+    img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
     doc.close()
     return img
 
@@ -379,18 +421,74 @@ if uploaded_file is not None:
                 unsafe_allow_html=True,
             )
 
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            process_csv = st.button("Execute Redaction Process", use_container_width=True, type="primary")
+        from redactor import scan_dataframe_for_review, redact_dataframe_with_review, redact_dataframe
+        from audit_logger import log_redaction_event
+        from tokenizer import PIITokenizer
 
-        if process_csv:
-            from redactor import redact_dataframe
-            from audit_logger import log_redaction_event
-            with st.spinner("Analyzing and redacting personal data..."):
-                df_redacted, detail, summary = redact_dataframe(
-                    df_original, mode=redaction_mode, use_ner=use_ner
+        # Initial scan for review records
+        if "csv_review_records" not in st.session_state or st.session_state.get("csv_review_file") != uploaded_file.name:
+            initial_records, _, _ = scan_dataframe_for_review(df_original, use_ner=use_ner)
+            st.session_state["csv_review_records"] = initial_records
+            st.session_state["csv_review_file"] = uploaded_file.name
+
+        # ── Interactive Review Expander ──
+        st.markdown('<div class="section-title">Human-in-the-Loop: Review & Spot-Check</div>', unsafe_allow_html=True)
+        with st.expander("Interactive PII Verification Table (Select Entities to Redact)", expanded=True):
+            st.caption("Review all automatically detected PII candidates. Uncheck any false positives before applying redactions.")
+
+            current_review_records = st.session_state.get("csv_review_records", [])
+            if current_review_records:
+                review_df = pd.DataFrame(current_review_records)
+                display_cols = ["approved", "row", "column", "pii_type", "matched_text", "cell_preview"]
+                edited_df = st.data_editor(
+                    review_df[display_cols],
+                    column_config={
+                        "approved": st.column_config.CheckboxColumn("Redact?", default=True),
+                        "row": st.column_config.NumberColumn("Row", disabled=True),
+                        "column": st.column_config.TextColumn("Column", disabled=True),
+                        "pii_type": st.column_config.TextColumn("PII Type", disabled=True),
+                        "matched_text": st.column_config.TextColumn("Detected Value", disabled=True),
+                        "cell_preview": st.column_config.TextColumn("Context Preview", disabled=True),
+                    },
+                    disabled=["row", "column", "pii_type", "matched_text", "cell_preview"],
+                    hide_index=True,
+                    use_container_width=True,
+                    height=280,
+                    key="csv_hitl_editor",
                 )
-                # Log audit event
+                # Keep session state updated with user checkbox edits
+                for i, row in edited_df.iterrows():
+                    if i < len(st.session_state["csv_review_records"]):
+                        st.session_state["csv_review_records"][i]["approved"] = bool(row["approved"])
+            else:
+                st.info("No PII candidates detected in this dataset.")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            process_approved = st.button("Apply Approved Redactions", use_container_width=True, type="primary")
+        with col2:
+            process_all = st.button("Redact All Automatically", use_container_width=True)
+
+        if process_approved or process_all:
+            _tokenizer = PIITokenizer() if redaction_mode == "tokenize" else None
+            with st.spinner("Applying privacy transformations..."):
+                if process_approved and st.session_state.get("csv_review_records"):
+                    df_redacted, detail, summary = redact_dataframe_with_review(
+                        df_original,
+                        st.session_state["csv_review_records"],
+                        mode=redaction_mode,
+                        policy=active_policy,
+                        tokenizer=_tokenizer,
+                    )
+                else:
+                    df_redacted, detail, summary = redact_dataframe(
+                        df_original,
+                        mode=redaction_mode,
+                        use_ner=use_ner,
+                        policy=active_policy,
+                        tokenizer=_tokenizer,
+                    )
+
                 csv_raw = uploaded_file.getvalue() if hasattr(uploaded_file, "getvalue") else None
                 log_redaction_event(
                     document_name=uploaded_file.name,
@@ -406,6 +504,7 @@ if uploaded_file is not None:
                 "csv_detail": detail,
                 "csv_summary": summary,
                 "csv_processed": True,
+                "csv_tokenizer": _tokenizer,
             })
 
         if st.session_state.get("csv_processed"):
@@ -453,7 +552,7 @@ if uploaded_file is not None:
                 st.download_button(
                     label="Download Redacted CSV File",
                     data=df_redacted.to_csv(index=False).encode("utf-8"),
-                    file_name="output_redacted.csv",
+                    file_name=f"{uploaded_file.name.rsplit('.', 1)[0]}_redacted.csv",
                     mime="text/csv",
                     use_container_width=True,
                 )
@@ -478,11 +577,29 @@ if uploaded_file is not None:
             with st.expander("Compliance Audit Report (Text Format)", expanded=False):
                 st.code(generate_report(summary, len(df_original)), language="text")
 
+            # Token mapping download (only for tokenize mode)
+            csv_tokenizer = st.session_state.get("csv_tokenizer")
+            if csv_tokenizer is not None and csv_tokenizer.total_tokens > 0:
+                with st.expander("Pseudo-anonymization Token Mapping", expanded=False):
+                    st.caption(
+                        f"Total unique tokens assigned: {csv_tokenizer.total_tokens}. "
+                        "This mapping can be used to re-identify entities when authorized."
+                    )
+                    mapping_json = csv_tokenizer.export_json()
+                    st.json(csv_tokenizer.get_mapping())
+                    st.download_button(
+                        label="Download Token Mapping (JSON)",
+                        data=mapping_json.encode("utf-8"),
+                        file_name=f"{uploaded_file.name.rsplit('.', 1)[0]}_token_mapping.json",
+                        mime="application/json",
+                        use_container_width=True,
+                    )
+
     # ════════════════════════════════════════════
     # PDF PIPELINE (new)
     # ════════════════════════════════════════════
     elif file_ext == "pdf":
-        pdf_bytes = uploaded_file.read()
+        pdf_bytes = uploaded_file.getvalue()
 
         # Quick classification preview
         try:
@@ -528,9 +645,9 @@ if uploaded_file is not None:
                 try:
                     img = _render_pdf_page_as_image(pdf_bytes, pi.page_number)
                     label = "Native Text" if pi.classification == "native-text" else "Image-Based (OCR)"
-                    st.image(img, caption=f"Page {pi.page_number + 1} — {label}", use_container_width=True)
-                except Exception:
-                    st.warning(f"Preview unavailable for page {pi.page_number + 1}")
+                    st.image(img, caption=f"Page {pi.page_number + 1} — {label}", use_column_width=True)
+                except Exception as e:
+                    st.error(f"Preview unavailable for page {pi.page_number + 1}: {e}")
 
         if n_image > 0:
             st.markdown(
@@ -542,20 +659,68 @@ if uploaded_file is not None:
                 unsafe_allow_html=True,
             )
 
-        c1, c2, c3 = st.columns([1, 2, 1])
-        with c2:
-            process_pdf = st.button("Execute PDF Redaction", use_container_width=True, type="primary")
+        from redactor import scan_pdf_for_review, redact_pdf_with_review, redact_pdf
+        from audit_logger import log_redaction_event
 
-        if process_pdf:
-            from redactor import redact_pdf
-            from audit_logger import log_redaction_event
+        # Initial scan for PDF review
+        if "pdf_review_records" not in st.session_state or st.session_state.get("pdf_review_file") != uploaded_file.name:
+            with st.spinner("Pre-scanning PDF for PII candidates..."):
+                pdf_records, _ = scan_pdf_for_review(pdf_bytes, use_ner=use_ner)
+                st.session_state["pdf_review_records"] = pdf_records
+                st.session_state["pdf_review_file"] = uploaded_file.name
+
+        # ── Interactive PDF Review Expander ──
+        st.markdown('<div class="section-title">Human-in-the-Loop: Review & Spot-Check</div>', unsafe_allow_html=True)
+        with st.expander("Interactive PII Verification Table (Select Entities to Redact)", expanded=True):
+            st.caption("Review all automatically detected PII candidates across PDF pages before drawing redactions.")
+
+            current_pdf_records = st.session_state.get("pdf_review_records", [])
+            if current_pdf_records:
+                pdf_review_df = pd.DataFrame(current_pdf_records)
+                display_cols = ["approved", "page", "source", "pii_type", "matched_text"]
+                edited_pdf_df = st.data_editor(
+                    pdf_review_df[display_cols],
+                    column_config={
+                        "approved": st.column_config.CheckboxColumn("Redact?", default=True),
+                        "page": st.column_config.NumberColumn("Page", disabled=True),
+                        "source": st.column_config.TextColumn("Source", disabled=True),
+                        "pii_type": st.column_config.TextColumn("PII Type", disabled=True),
+                        "matched_text": st.column_config.TextColumn("Detected Value", disabled=True),
+                    },
+                    disabled=["page", "source", "pii_type", "matched_text"],
+                    hide_index=True,
+                    use_container_width=True,
+                    height=240,
+                    key="pdf_hitl_editor",
+                )
+                for i, row in edited_pdf_df.iterrows():
+                    if i < len(st.session_state["pdf_review_records"]):
+                        st.session_state["pdf_review_records"][i]["approved"] = bool(row["approved"])
+            else:
+                st.info("No PII candidates detected in this PDF.")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            process_approved_pdf = st.button("Apply Approved Redactions to PDF", use_container_width=True, type="primary")
+        with col2:
+            process_all_pdf = st.button("Redact Full PDF Automatically", use_container_width=True)
+
+        if process_approved_pdf or process_all_pdf:
             with st.spinner("Classifying pages, running OCR where needed, applying redaction..."):
                 try:
-                    redacted_bytes, page_metadata, summary = redact_pdf(
-                        pdf_bytes,
-                        mode=redaction_mode,
-                        use_ner=use_ner,
-                    )
+                    if process_approved_pdf and st.session_state.get("pdf_review_records"):
+                        redacted_bytes, page_metadata, summary = redact_pdf_with_review(
+                            pdf_bytes,
+                            st.session_state["pdf_review_records"],
+                            mode=redaction_mode,
+                        )
+                    else:
+                        redacted_bytes, page_metadata, summary = redact_pdf(
+                            pdf_bytes,
+                            mode=redaction_mode,
+                            use_ner=use_ner,
+                        )
+
                     # Log audit event
                     log_redaction_event(
                         document_name=uploaded_file.name,
@@ -617,15 +782,15 @@ if uploaded_file is not None:
                 with c1:
                     try:
                         img_before = _render_pdf_page_as_image(original_bytes, pg_idx)
-                        st.image(img_before, caption="Before Redaction", use_container_width=True)
-                    except Exception:
-                        st.warning("Preview unavailable")
+                        st.image(img_before, caption="Before Redaction", use_column_width=True)
+                    except Exception as e:
+                        st.error(f"Preview unavailable: {e}")
                 with c2:
                     try:
                         img_after = _render_pdf_page_as_image(redacted_bytes, pg_idx)
-                        st.image(img_after, caption="After Redaction", use_container_width=True)
-                    except Exception:
-                        st.warning("Preview unavailable")
+                        st.image(img_after, caption="After Redaction", use_column_width=True)
+                    except Exception as e:
+                        st.error(f"Preview unavailable: {e}")
 
             # Download
             st.markdown('<div class="section-title">Export Redacted Files & Audit Artifacts</div>', unsafe_allow_html=True)
@@ -634,7 +799,7 @@ if uploaded_file is not None:
                 st.download_button(
                     label="Download Redacted PDF File",
                     data=redacted_bytes,
-                    file_name="output_redacted.pdf",
+                    file_name=f"{uploaded_file.name.rsplit('.', 1)[0]}_redacted.pdf",
                     mime="application/pdf",
                     use_container_width=True,
                 )

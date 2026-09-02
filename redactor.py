@@ -98,14 +98,18 @@ MASK_FUNCTIONS = {
 }
 
 
-def redact_value(value: str, pii_detected: Dict, mode: str = "mask") -> str:
+def redact_value(value: str, pii_detected: Dict, mode: str = "mask",
+                 policy: Dict = None, tokenizer=None) -> str:
     """
     Redacts a single cell value based on detected PII entities.
 
     Args:
         value: Original cell value.
         pii_detected: Dictionary of detected PII {pii_type: [matches]}.
-        mode: "mask" for partial masking, "full" for complete token replacement.
+        mode: "mask" for partial masking, "full" for complete token replacement,
+              "tokenize" for consistent pseudo-anonymization.
+        policy: Optional per-field mode overrides {pii_type: mode_str}.
+        tokenizer: Optional PIITokenizer instance (required for tokenize mode).
 
     Returns:
         Redacted cell string.
@@ -116,9 +120,26 @@ def redact_value(value: str, pii_detected: Dict, mode: str = "mask") -> str:
     result = str(value)
 
     for pii_type, matches in pii_detected.items():
-        if mode == "full":
+        # Determine effective mode: policy override > global mode
+        effective_mode = mode
+        if policy and pii_type in policy:
+            effective_mode = policy[pii_type]
+
+        # Skip if policy says visible
+        if effective_mode == "visible":
+            continue
+
+        if effective_mode == "full":
             return redact_full(result, pii_type)
+        elif effective_mode == "tokenize" and tokenizer is not None:
+            for match in matches:
+                token = tokenizer.tokenize(match, pii_type)
+                result = result.replace(match, token)
+            # For NAMA that covers the whole cell
+            if pii_type == "NAMA" and result == str(value):
+                result = tokenizer.tokenize(result, pii_type)
         else:
+            # Default: mask
             if pii_type == "NAMA":
                 mask_fn = MASK_FUNCTIONS.get(pii_type, lambda x: "****")
                 result = mask_fn(result)
@@ -135,14 +156,18 @@ def redact_dataframe(
     df: pd.DataFrame,
     mode: str = "mask",
     use_ner: bool = True,
+    policy: Dict = None,
+    tokenizer=None,
 ) -> tuple:
     """
     Redacts an entire pandas DataFrame.
 
     Args:
         df: Original pandas DataFrame.
-        mode: "mask" (partial) or "full" (complete replacement).
+        mode: "mask" (partial), "full" (complete replacement), or "tokenize".
         use_ner: Whether to apply spaCy NER for person name recognition.
+        policy: Optional per-field mode overrides {pii_type: mode_str}.
+        tokenizer: Optional PIITokenizer instance for tokenize mode.
 
     Returns:
         Tuple containing:
@@ -151,6 +176,11 @@ def redact_dataframe(
         - summary: Aggregate PII counts per type.
     """
     detail, summary = analyze_dataframe(df, use_ner=use_ner)
+
+    # Auto-create tokenizer if tokenize mode but none provided
+    if mode == "tokenize" and tokenizer is None:
+        from tokenizer import PIITokenizer
+        tokenizer = PIITokenizer()
 
     df_redacted = df.copy()
 
@@ -161,10 +191,271 @@ def redact_dataframe(
                     original_value = str(df_redacted.at[idx, col])
                     pii_found = detail[idx][col]
                     df_redacted.at[idx, col] = redact_value(
-                        original_value, pii_found, mode=mode
+                        original_value, pii_found, mode=mode,
+                        policy=policy, tokenizer=tokenizer,
                     )
 
     return df_redacted, detail, summary
+
+
+# ──────────────────────────────────────────────
+# Human-in-the-Loop (HITL) Review Functions
+# ──────────────────────────────────────────────
+
+def scan_dataframe_for_review(df: pd.DataFrame, use_ner: bool = True) -> tuple:
+    """
+    Scans a DataFrame and returns a list of candidate PII items suitable
+    for interactive review in an editable data grid.
+
+    Args:
+        df: pandas DataFrame to inspect.
+        use_ner: Whether to apply NER / gazetteer.
+
+    Returns:
+        Tuple of:
+        - review_records: List of dicts with keys [approved, row, column, pii_type, matched_text, cell_preview, _row_idx]
+        - detail: Full detail dict from analyze_dataframe
+        - summary: Summary count dict
+    """
+    detail, summary = analyze_dataframe(df, use_ner=use_ner)
+    review_records = []
+
+    for idx in df.index:
+        if idx in detail:
+            for col, pii_dict in detail[idx].items():
+                orig_val = str(df.at[idx, col])
+                for ptype, matches in pii_dict.items():
+                    for match in matches:
+                        review_records.append({
+                            "approved": True,
+                            "row": int(idx) + 1,
+                            "column": str(col),
+                            "pii_type": str(ptype),
+                            "matched_text": str(match),
+                            "cell_preview": orig_val[:40] + ("..." if len(orig_val) > 40 else ""),
+                            "_row_idx": int(idx),
+                        })
+
+    return review_records, detail, summary
+
+
+def redact_dataframe_with_review(
+    df: pd.DataFrame,
+    review_records: list,
+    mode: str = "mask",
+    policy: Dict = None,
+    tokenizer=None,
+) -> tuple:
+    """
+    Redacts a DataFrame applying only user-approved PII records.
+
+    Args:
+        df: Original pandas DataFrame.
+        review_records: List of dicts from review table (with 'approved' boolean).
+        mode: Redaction mode ("mask", "full", "tokenize").
+        policy: Optional role-based policy overrides.
+        tokenizer: Optional PIITokenizer instance.
+
+    Returns:
+        Tuple of (df_redacted, filtered_detail, summary).
+    """
+    filtered_detail: Dict = {}
+    summary: Dict[str, int] = {}
+
+    for item in review_records:
+        if not item.get("approved", True):
+            continue
+
+        idx = item.get("_row_idx", item.get("row", 1) - 1)
+        col = item["column"]
+        ptype = item["pii_type"]
+        match = item["matched_text"]
+
+        if idx not in filtered_detail:
+            filtered_detail[idx] = {}
+        if col not in filtered_detail[idx]:
+            filtered_detail[idx][col] = {}
+        if ptype not in filtered_detail[idx][col]:
+            filtered_detail[idx][col][ptype] = []
+
+        filtered_detail[idx][col][ptype].append(match)
+        summary[ptype] = summary.get(ptype, 0) + 1
+
+    if mode == "tokenize" and tokenizer is None:
+        from tokenizer import PIITokenizer
+        tokenizer = PIITokenizer()
+
+    df_redacted = df.copy()
+    for idx in df_redacted.index:
+        if idx in filtered_detail:
+            for col in df_redacted.columns:
+                if col in filtered_detail[idx]:
+                    original_value = str(df_redacted.at[idx, col])
+                    pii_found = filtered_detail[idx][col]
+                    df_redacted.at[idx, col] = redact_value(
+                        original_value, pii_found, mode=mode,
+                        policy=policy, tokenizer=tokenizer,
+                    )
+
+    return df_redacted, filtered_detail, summary
+
+
+def scan_pdf_for_review(
+    pdf_bytes: bytes,
+    use_ner: bool = True,
+    ocr_dpi: int = 300,
+) -> tuple:
+    """
+    Scans a PDF document and extracts all candidate PII matches across all pages
+    without modifying the document, preparing candidates for manual review.
+
+    Returns:
+        Tuple of:
+        - review_records: List of candidate match dicts for the UI.
+        - page_classifications: List of PageInfo objects.
+    """
+    import fitz
+    from page_classifier import classify_pdf_bytes
+    from ocr_engine import ocr_pdf_page, ocr_pdf_page_regions
+    from detector import (
+        detect_pii_in_native_pdf_page,
+        detect_pii_in_ocr_result,
+    )
+
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    page_classifications = classify_pdf_bytes(pdf_bytes)
+    review_records = []
+
+    for page_info in page_classifications:
+        page = doc[page_info.page_number]
+        pg_num = page_info.page_number + 1
+
+        if page_info.classification == "native-text":
+            matches = detect_pii_in_native_pdf_page(page_info.native_text, use_ner=use_ner)
+            for m in matches:
+                review_records.append({
+                    "approved": True,
+                    "page": pg_num,
+                    "source": "Native Text",
+                    "pii_type": m.pii_type,
+                    "matched_text": m.matched_text,
+                    "_page_idx": page_info.page_number,
+                    "_is_ocr": False,
+                    "_box": None,
+                })
+
+            if page_info.has_images and page_info.image_rects:
+                ocr_results = ocr_pdf_page_regions(
+                    page, page_info.image_rects, page_info.page_number, dpi=ocr_dpi
+                )
+                for ocr_res in ocr_results:
+                    img_matches = detect_pii_in_ocr_result(ocr_res, use_ner=use_ner)
+                    for m in img_matches:
+                        review_records.append({
+                            "approved": True,
+                            "page": pg_num,
+                            "source": "Embedded Image (OCR)",
+                            "pii_type": m.pii_type,
+                            "matched_text": m.matched_text,
+                            "_page_idx": page_info.page_number,
+                            "_is_ocr": True,
+                            "_box": (m.box_left, m.box_top, m.box_width, m.box_height) if m.box_left is not None else None,
+                        })
+        else:
+            ocr_result = ocr_pdf_page(page, page_info.page_number, dpi=ocr_dpi)
+            ocr_matches = detect_pii_in_ocr_result(ocr_result, use_ner=use_ner)
+            for m in ocr_matches:
+                review_records.append({
+                    "approved": True,
+                    "page": pg_num,
+                    "source": "Scanned Page (OCR)",
+                    "pii_type": m.pii_type,
+                    "matched_text": m.matched_text,
+                    "_page_idx": page_info.page_number,
+                    "_is_ocr": True,
+                    "_box": (m.box_left, m.box_top, m.box_width, m.box_height) if m.box_left is not None else None,
+                })
+
+    doc.close()
+    return review_records, page_classifications
+
+
+def redact_pdf_with_review(
+    pdf_bytes: bytes,
+    review_records: list,
+    mode: str = "mask",
+    ocr_dpi: int = 300,
+) -> tuple:
+    """
+    Applies redaction to a PDF using only approved items from the review table.
+
+    Returns:
+        Tuple of (output_pdf_bytes, page_metadata, summary).
+    """
+    import fitz
+    from detector import PIIMatch
+
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    num_pages = len(doc)
+
+    # Group approved records per page index
+    per_page_native = {i: [] for i in range(num_pages)}
+    per_page_ocr = {i: [] for i in range(num_pages)}
+    summary: Dict[str, int] = {}
+    page_metadata = []
+
+    for item in review_records:
+        if not item.get("approved", True):
+            continue
+
+        pg_idx = item.get("_page_idx", item.get("page", 1) - 1)
+        if pg_idx >= num_pages:
+            continue
+
+        ptype = item["pii_type"]
+        text = item["matched_text"]
+        summary[ptype] = summary.get(ptype, 0) + 1
+
+        if item.get("_is_ocr", False):
+            box = item.get("_box")
+            if box:
+                bl, bt, bw, bh = box
+                per_page_ocr[pg_idx].append(PIIMatch(
+                    pii_type=ptype,
+                    matched_text=text,
+                    box_left=bl,
+                    box_top=bt,
+                    box_width=bw,
+                    box_height=bh,
+                ))
+            else:
+                per_page_native[pg_idx].append(PIIMatch(pii_type=ptype, matched_text=text))
+        else:
+            per_page_native[pg_idx].append(PIIMatch(pii_type=ptype, matched_text=text))
+
+    for pg_idx in range(num_pages):
+        page = doc[pg_idx]
+        native_matches = per_page_native[pg_idx]
+        ocr_matches = per_page_ocr[pg_idx]
+
+        if native_matches:
+            redact_pdf_native_page(page, native_matches, mode=mode)
+        if ocr_matches:
+            redact_pdf_image_page(page, ocr_matches, image_dpi=ocr_dpi)
+
+        all_matches = native_matches + ocr_matches
+        page_metadata.append({
+            "page_number": pg_idx + 1,
+            "classification": "reviewed",
+            "pii_found": [
+                {"type": m.pii_type, "text": m.matched_text, "has_position": m.box_left is not None}
+                for m in all_matches
+            ],
+        })
+
+    output_buf = doc.tobytes(garbage=3, deflate=True)
+    doc.close()
+    return output_buf, page_metadata, summary
 
 
 def generate_report(summary: Dict, total_rows: int) -> str:
@@ -483,10 +774,22 @@ def redact_pdf(
         }
 
         if page_info.classification == "native-text":
+            # 1. Process Native Text
             pii_matches = detect_pii_in_native_pdf_page(
                 page_info.native_text, use_ner=use_ner
             )
             redact_pdf_native_page(page, pii_matches, mode=mode)
+
+            # 2. Process Embedded Images (Hybrid Case)
+            if page_info.has_images and page_info.image_rects:
+                from ocr_engine import ocr_pdf_page_regions
+                ocr_results = ocr_pdf_page_regions(
+                    page, page_info.image_rects, page_info.page_number, dpi=ocr_dpi
+                )
+                for ocr_res in ocr_results:
+                    img_pii_matches = detect_pii_in_ocr_result(ocr_res, use_ner=use_ner)
+                    redact_pdf_image_page(page, img_pii_matches, image_dpi=ocr_dpi)
+                    pii_matches.extend(img_pii_matches)
         else:
             # Image-based: run OCR then pixel-level redaction
             ocr_result = ocr_pdf_page(page, page_info.page_number, dpi=ocr_dpi)

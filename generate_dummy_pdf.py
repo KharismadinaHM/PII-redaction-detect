@@ -95,7 +95,7 @@ def _render_text_to_image(data: dict, title: str = "Employee Record (Scanned)") 
     return img
 
 
-def _add_native_text_page(doc: fitz.Document, data: dict, title: str) -> None:
+def _add_native_text_page(doc: fitz.Document, data: dict, title: str, add_embedded_image: bool = False) -> None:
     """
     Adds a native-text page to the PDF document using PyMuPDF text insertion.
 
@@ -103,6 +103,7 @@ def _add_native_text_page(doc: fitz.Document, data: dict, title: str) -> None:
         doc: The PyMuPDF Document to add the page to.
         data: Employee data dict.
         title: Page title string.
+        add_embedded_image: If True, adds a small simulated scan image to the page.
     """
     page = doc.new_page(width=595, height=842)  # A4 in points
 
@@ -146,6 +147,26 @@ def _add_native_text_page(doc: fitz.Document, data: dict, title: str) -> None:
             color=(0.05, 0.05, 0.05),
         )
         y += line_height
+
+    # Embedded image (simulating a scanned attachment within a text page)
+    if add_embedded_image:
+        page.insert_text(
+            fitz.Point(50, y + 20),
+            "Attached Scanned ID:",
+            fontsize=11,
+            fontname="helv",
+            color=(0.3, 0.3, 0.3),
+        )
+        small_img = _render_text_to_image({"ID NIK": "1111222233334444"}, title="Scanned KTP Crop")
+        # Resize to make it small enough to fit
+        small_img.thumbnail((400, 300))
+        buf = io.BytesIO()
+        small_img.save(buf, format="PNG")
+        
+        # Insert image at bottom of the page
+        img_y = y + 40
+        page.insert_image(fitz.Rect(50, img_y, 50 + small_img.width * 0.4, img_y + small_img.height * 0.4), stream=buf.getvalue())
+
 
     # Footer note
     page.insert_text(
@@ -201,6 +222,7 @@ def generate_dummy_pdf(output_path: str = None) -> str:
         doc,
         EMPLOYEE_DATA,
         "Employee Personal Record — Budi Santoso",
+        add_embedded_image=True,
     )
 
     # Page 2: Native text — Employee 2

@@ -23,6 +23,7 @@ class PageInfo:
     native_text: str            # Extracted text (empty for image-based pages)
     char_count: int             # Number of extracted text characters
     has_images: bool            # Whether the page contains embedded images
+    image_rects: List[tuple] = field(default_factory=list)  # List of (x0, y0, x1, y1) tuples in PDF points
     width: float = 0.0          # Page width in points
     height: float = 0.0         # Page height in points
 
@@ -47,6 +48,18 @@ def classify_page(page: fitz.Page, page_index: int) -> PageInfo:
     has_images = len(images) > 0
     rect = page.rect
 
+    image_rects = []
+    if has_images:
+        for img in images:
+            xref = img[0]
+            try:
+                # get_image_rects returns a list of fitz.Rect
+                rects = page.get_image_rects(xref)
+                for r in rects:
+                    image_rects.append((r.x0, r.y0, r.x1, r.y1))
+            except Exception:
+                pass
+
     if char_count >= MIN_TEXT_CHARS:
         classification = "native-text"
     else:
@@ -58,6 +71,7 @@ def classify_page(page: fitz.Page, page_index: int) -> PageInfo:
         native_text=text if classification == "native-text" else "",
         char_count=char_count,
         has_images=has_images,
+        image_rects=image_rects,
         width=rect.width,
         height=rect.height,
     )

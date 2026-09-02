@@ -96,6 +96,126 @@ def detect_name_ner(text: str) -> List[str]:
     return names
 
 
+# ──────────────────────────────────────────────
+# Indonesian Name Gazetteer
+# ──────────────────────────────────────────────
+
+INDO_FIRST_NAMES = {
+    # Male names
+    "adi", "agus", "ahmad", "akhbar", "aldi", "amin", "andi", "andika",
+    "andri", "angga", "anwar", "arief", "arif", "aris", "asep", "bagas",
+    "bagus", "bambang", "bayu", "bima", "budi", "cahya", "candra", "danu",
+    "dedi", "deni", "denny", "dian", "dimas", "doni", "dwi", "edi", "eko",
+    "fajar", "faisal", "farid", "farhan", "fauzi", "galih", "galang",
+    "gilang", "gunawan", "gustin", "habib", "hadi", "hafiz", "halim",
+    "haris", "hasan", "hendri", "hendra", "hendy", "herman", "hero",
+    "hidayat", "husein", "ibrahim", "ichsan", "ilham", "imam", "indra",
+    "irfan", "irwan", "ivan", "joko", "jaya", "johan", "krisna", "kurnia",
+    "lukman", "mahendra", "mulya", "nanda", "nova", "nugroho", "pandu",
+    "prasetyo", "putra", "rachman", "rafi", "rahmat", "rama", "ramadan",
+    "randi", "rangga", "rendy", "reza", "ridho", "ridwan", "rifki",
+    "rizal", "rizki", "rudi", "ryan", "satria", "sigit", "soleh", "sugi",
+    "sugeng", "sulastri", "supriyadi", "surya", "syahrul", "taufik",
+    "teguh", "tri", "wahyu", "wahid", "wawan", "widodo", "wisnu", "yanto",
+    "yoga", "yudi", "yusuf", "zaki", "zainal",
+    # Female names
+    "adinda", "aini", "aisyah", "ajeng", "amelia", "anisa", "anya",
+    "arum", "ayu", "bella", "bunga", "citra", "cut", "dara", "devi",
+    "dewi", "diana", "dina", "ella", "endang", "erna", "eva", "fitri",
+    "fitriani", "gita", "hana", "ika", "indah", "intan", "ira", "irma",
+    "isna", "kartika", "kirana", "laila", "lestari", "lilis", "linda",
+    "mawar", "mega", "mira", "mutia", "nadia", "nana", "ningsih", "nina",
+    "nisa", "nita", "novianti", "nurul", "paramita", "puspita", "putri",
+    "rahma", "rahmawati", "rani", "ratna", "rini", "rina", "rita", "rosa",
+    "sari", "septiani", "setiawati", "sinta", "siska", "siti", "sri",
+    "suci", "tari", "tika", "tri", "umi", "utami", "vina", "wati",
+    "widya", "wulan", "yanti", "yeni", "yuli", "yuliana", "zahra",
+}
+
+INDO_LAST_NAMES = {
+    "abdullah", "adiputra", "agustina", "aisyah", "amalia", "anggraeni",
+    "anwar", "ardiansyah", "arianto", "budianto", "budiman", "cahyani",
+    "darmawan", "darma", "dewantara", "firmansyah", "gunawan", "halim",
+    "handoko", "harahap", "hardian", "hartono", "hasibuan", "hermawan",
+    "hidayat", "hutapea", "hutasoit", "iskandar", "juwita", "kartono",
+    "kurniawan", "laksono", "lestari", "mahardika", "mahendra", "manurung",
+    "maulana", "megawati", "mulyadi", "nainggolan", "nasution", "nugraha",
+    "nugroho", "panjaitan", "permadi", "permana", "prakoso", "prasetyo",
+    "pratama", "purnama", "purnomo", "putra", "putri", "rachman",
+    "rahayu", "rahmawati", "ramadhan", "riyadi", "santoso", "saputra", "saputri",
+    "sari", "setiawan", "simanjuntak", "sinaga", "siregar", "situmorang",
+    "subagyo", "subekti", "sudirman", "sugiarto", "sukma", "sulistyo",
+    "sumadi", "supriyadi", "surya", "susanto", "sutanto", "syahputra",
+    "tampubolon", "tanjung", "utama", "utami", "wardana", "wardani",
+    "wibowo", "wibisono", "widodo", "wijaya", "wulandari", "yulianto",
+    "yusuf",
+}
+
+
+def detect_name_gazetteer(text: str) -> List[str]:
+    """
+    Detects Indonesian person names using a gazetteer (dictionary) approach.
+
+    Logic: scans tokens for known Indonesian first names, then checks if
+    the adjacent token is a known surname to form a full name match.
+
+    Args:
+        text: Input string to inspect.
+
+    Returns:
+        List of detected name strings.
+    """
+    words = str(text).split()
+    names = []
+    i = 0
+    while i < len(words):
+        word_clean = re.sub(r"[^a-zA-Z]", "", words[i]).lower()
+        if word_clean in INDO_FIRST_NAMES:
+            # Try to capture a multi-word name (first + last)
+            candidate = [words[i]]
+            j = i + 1
+            while j < len(words) and j < i + 3:  # max 3 tokens for a name
+                next_clean = re.sub(r"[^a-zA-Z]", "", words[j]).lower()
+                if next_clean in INDO_LAST_NAMES or next_clean in INDO_FIRST_NAMES:
+                    candidate.append(words[j])
+                    j += 1
+                else:
+                    break
+            if len(candidate) >= 2:
+                names.append(" ".join(candidate))
+                i = j
+                continue
+        i += 1
+    return names
+
+
+def detect_name_hybrid(text: str, use_ner: bool = True) -> List[str]:
+    """
+    Hybrid name detection combining spaCy NER with Indonesian name gazetteer.
+
+    Merges results from both approaches and deduplicates.
+
+    Args:
+        text: Input string to inspect.
+        use_ner: Whether to also run spaCy NER.
+
+    Returns:
+        Deduplicated list of detected person names.
+    """
+    names_set = set()
+
+    # Gazetteer-based detection (always active)
+    for name in detect_name_gazetteer(text):
+        names_set.add(name)
+
+    # spaCy NER detection
+    if use_ner:
+        for name in detect_name_ner(text):
+            names_set.add(name)
+
+    return list(names_set)
+
+
 def detect_all_pii(text: str, use_ner: bool = True) -> Dict[str, List[str]]:
     """
     Detects all configured PII categories (Regex + NER).
@@ -109,10 +229,9 @@ def detect_all_pii(text: str, use_ner: bool = True) -> Dict[str, List[str]]:
     """
     results = detect_pii_regex(text)
 
-    if use_ner:
-        names = detect_name_ner(text)
-        if names:
-            results["NAMA"] = names
+    names = detect_name_hybrid(text, use_ner=use_ner)
+    if names:
+        results["NAMA"] = names
 
     return results
 
@@ -156,8 +275,8 @@ def detect_pii_in_value(value: str, column_name: str = "",
             results["NO_REKENING"] = digits_match
         elif text:
             results["NO_REKENING"] = [text]
-    elif use_ner:
-        names = detect_name_ner(text)
+    else:
+        names = detect_name_hybrid(text, use_ner=use_ner)
         if names:
             results["NAMA"] = names
 
