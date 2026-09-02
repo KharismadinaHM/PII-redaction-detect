@@ -11,7 +11,7 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from redactor import (
-    mask_nik, mask_phone, mask_email, mask_npwp, mask_name,
+    mask_nik, mask_phone, mask_email, mask_npwp, mask_name, mask_bank_account,
     redact_value, redact_dataframe,
 )
 
@@ -24,6 +24,21 @@ class TestMaskNIK:
 
     def test_mask_short(self):
         result = mask_nik("1234")
+        assert "*" in result
+
+
+class TestMaskBankAccount:
+    def test_mask_bank_10_digit(self):
+        result = mask_bank_account("5221345678")
+        assert result.startswith("5221")
+        assert result.endswith("78")
+        assert "*" in result
+        assert len(result) == 10
+
+    def test_mask_bank_16_digit(self):
+        result = mask_bank_account("1234567890123456")
+        assert result.startswith("1234")
+        assert result.endswith("56")
         assert "*" in result
 
 

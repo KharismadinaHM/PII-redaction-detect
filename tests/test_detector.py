@@ -91,12 +91,32 @@ class TestNPWPDetection:
         assert "NPWP" in result
 
 
+class TestBankAccountDetection:
+    """Tests for Bank Account Number detection with context keywords."""
+
+    def test_bank_account_with_rekening_prefix(self):
+        result = detect_pii_regex("No Rekening: 1234567890123")
+        assert "NO_REKENING" in result
+
+    def test_bank_account_with_bank_bca(self):
+        result = detect_pii_regex("Bank BCA: 5221345678")
+        assert "NO_REKENING" in result
+
+    def test_bank_account_column_awareness(self):
+        result = detect_pii_in_value("5221345678", column_name="no_rekening", use_ner=False)
+        assert "NO_REKENING" in result
+
+
 class TestColumnAwareness:
     """Tests column-aware disambiguation rules."""
 
     def test_kolom_nama_detected_as_nama(self):
         result = detect_pii_in_value("Budi Santoso", column_name="nama", use_ner=False)
         assert "NAMA" in result
+
+    def test_kolom_rekening_detected_as_bank(self):
+        result = detect_pii_in_value("1234567890", column_name="rekening", use_ner=False)
+        assert "NO_REKENING" in result
 
     def test_kolom_gaji_skipped(self):
         result = detect_pii_in_value("Rp 15.000.000", column_name="gaji", use_ner=False)

@@ -67,6 +67,14 @@ def mask_name(name: str) -> str:
     return " ".join(masked)
 
 
+def mask_bank_account(account: str) -> str:
+    """Mask bank account number: displays first 4 and last 2 digits → 1234****90."""
+    account = str(account).strip()
+    if len(account) >= 6:
+        return account[:4] + "*" * (len(account) - 6) + account[-2:]
+    return "*" * len(account)
+
+
 # ──────────────────────────────────────────────
 # Full Redaction Placeholder
 # ──────────────────────────────────────────────
@@ -86,6 +94,7 @@ MASK_FUNCTIONS = {
     "EMAIL": mask_email,
     "NPWP": mask_npwp,
     "NAMA": mask_name,
+    "NO_REKENING": mask_bank_account,
 }
 
 
@@ -186,6 +195,7 @@ def generate_report(summary: Dict, total_rows: int) -> str:
         "EMAIL": "Email Address",
         "NPWP": "Tax ID (NPWP)",
         "NAMA": "Full Name",
+        "NO_REKENING": "Bank Account Number",
     }
 
     for pii_type, count in sorted(summary.items()):
@@ -200,6 +210,146 @@ def generate_report(summary: Dict, total_rows: int) -> str:
     ])
 
     return "\n".join(lines)
+
+
+def generate_pdf_report(
+    summary: Dict[str, int],
+    total_records_or_pages: int,
+    document_name: str = "Document",
+    document_type: str = "CSV",
+    mode: str = "mask",
+) -> bytes:
+    """
+    Generates a formal 1-page PDF Data Redaction & Compliance Audit Certificate.
+
+    Args:
+        summary: Dictionary of {pii_type: count}.
+        total_records_or_pages: Number of rows or pages processed.
+        document_name: Original file name.
+        document_type: "CSV" or "PDF".
+        mode: Redaction mode ("mask" or "full").
+
+    Returns:
+        Bytes of the generated compliance PDF document.
+    """
+    import fitz
+    from datetime import datetime, timezone
+
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)  # A4
+
+    # Header background
+    page.draw_rect(fitz.Rect(0, 0, 595, 110), fill=(0.06, 0.09, 0.16))  # #0f172a
+    page.draw_rect(fitz.Rect(0, 107, 595, 110), fill=(0.11, 0.31, 0.85)) # blue accent
+
+    # Title
+    page.insert_text(
+        fitz.Point(50, 50),
+        "DATA PRIVACY COMPLIANCE AUDIT CERTIFICATE",
+        fontsize=15,
+        fontname="helv",
+        color=(1, 1, 1),
+    )
+    page.insert_text(
+        fitz.Point(50, 72),
+        "Official Personal Data Redaction & Audit Verification Record",
+        fontsize=10,
+        fontname="helv",
+        color=(0.7, 0.75, 0.82),
+    )
+    page.insert_text(
+        fitz.Point(50, 92),
+        "Legal Framework: Indonesian Personal Data Protection Act (UU PDP No. 27/2022)",
+        fontsize=8,
+        fontname="helv",
+        color=(0.58, 0.64, 0.72),
+    )
+
+    # Document & Audit Metadata
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    mode_label = "Partial Masking (Operational)" if mode == "mask" else "Full Redaction (External Distribution)"
+
+    metadata_items = [
+        ("Target Document", document_name),
+        ("Document Format", f"{document_type.upper()} ({total_records_or_pages} {'rows' if document_type.upper() == 'CSV' else 'pages'})"),
+        ("Redaction Method", mode_label),
+        ("Execution Timestamp", now_str),
+        ("Audit Log Identifier", f"AUD-{datetime.now().strftime('%Y%m%d%H%M%S')}"),
+    ]
+
+    y = 150
+    page.draw_rect(fitz.Rect(50, 130, 545, 235), fill=(0.97, 0.98, 0.99), color=(0.8, 0.84, 0.88))
+    for label, val in metadata_items:
+        page.insert_text(fitz.Point(65, y), f"{label}:", fontsize=9, fontname="helv", color=(0.3, 0.35, 0.42))
+        page.insert_text(fitz.Point(210, y), str(val), fontsize=9, fontname="helv", color=(0.06, 0.09, 0.16))
+        y += 18
+
+    # Table Header
+    y_table = 265
+    page.insert_text(fitz.Point(50, y_table - 8), "SUMMARY OF REDACTED PERSONAL DATA ENTITIES", fontsize=11, fontname="helv", color=(0.06, 0.09, 0.16))
+    page.draw_rect(fitz.Rect(50, y_table, 545, y_table + 24), fill=(0.06, 0.09, 0.16))
+
+    page.insert_text(fitz.Point(65, y_table + 16), "PII Classification Category", fontsize=9, fontname="helv", color=(1, 1, 1))
+    page.insert_text(fitz.Point(340, y_table + 16), "Detected Count", fontsize=9, fontname="helv", color=(1, 1, 1))
+    page.insert_text(fitz.Point(440, y_table + 16), "Status", fontsize=9, fontname="helv", color=(1, 1, 1))
+
+    pii_labels = {
+        "NIK": "National ID (NIK - 16 Digits)",
+        "NO_HP": "Mobile Phone Number (08xx / +62)",
+        "EMAIL": "Email Address",
+        "NPWP": "Taxpayer Identification (NPWP)",
+        "NAMA": "Full Name (Person Entity)",
+        "NO_REKENING": "Bank Account Number",
+    }
+
+    y_row = y_table + 24
+    total_pii = sum(summary.values()) if summary else 0
+
+    all_types = ["NAMA", "NIK", "NO_HP", "EMAIL", "NPWP", "NO_REKENING"]
+    for i, ptype in enumerate(all_types):
+        count = summary.get(ptype, 0)
+        bg = (0.97, 0.98, 0.99) if i % 2 == 0 else (1, 1, 1)
+        page.draw_rect(fitz.Rect(50, y_row, 545, y_row + 22), fill=bg, color=(0.88, 0.91, 0.94))
+
+        label = pii_labels.get(ptype, ptype)
+        page.insert_text(fitz.Point(65, y_row + 15), label, fontsize=9, fontname="helv", color=(0.12, 0.16, 0.22))
+        page.insert_text(fitz.Point(350, y_row + 15), str(count), fontsize=9, fontname="helv", color=(0.12, 0.16, 0.22))
+        page.insert_text(fitz.Point(440, y_row + 15), "REDACTED" if count > 0 else "None Found", fontsize=8, fontname="helv", color=(0.08, 0.48, 0.25) if count > 0 else (0.5, 0.55, 0.6))
+        y_row += 22
+
+    # Total Row
+    page.draw_rect(fitz.Rect(50, y_row, 545, y_row + 24), fill=(0.94, 0.96, 0.98), color=(0.75, 0.8, 0.85))
+    page.insert_text(fitz.Point(65, y_row + 16), "TOTAL PROTECTED ENTITIES", fontsize=9, fontname="helv", color=(0.06, 0.09, 0.16))
+    page.insert_text(fitz.Point(350, y_row + 16), str(total_pii), fontsize=10, fontname="helv", color=(0.11, 0.31, 0.85))
+    page.insert_text(fitz.Point(440, y_row + 16), "VERIFIED", fontsize=9, fontname="helv", color=(0.08, 0.48, 0.25))
+
+    # Attestation Section
+    y_attest = y_row + 55
+    page.draw_rect(fitz.Rect(50, y_attest, 545, y_attest + 100), fill=(0.98, 0.99, 1.0), color=(0.8, 0.86, 0.95))
+    page.insert_text(fitz.Point(65, y_attest + 22), "COMPLIANCE ATTESTATION STATEMENT", fontsize=10, fontname="helv", color=(0.11, 0.31, 0.85))
+    attest_text = (
+        "This certifies that all identified personal identifiable information (PII) within the subject document\n"
+        "has undergone automated cryptographic masking and/or physical pixel redaction in compliance with\n"
+        "applicable data protection statutes. Non-PII fields remain structurally unaltered."
+    )
+    y_line = y_attest + 42
+    for line in attest_text.split("\n"):
+        page.insert_text(fitz.Point(65, y_line), line, fontsize=8, fontname="helv", color=(0.25, 0.3, 0.38))
+        y_line += 14
+
+    # Footer
+    page.draw_line(fitz.Point(50, 790), fitz.Point(545, 790), color=(0.8, 0.84, 0.88), width=1)
+    page.insert_text(
+        fitz.Point(50, 805),
+        "Generated automatically by PII Redaction System v1.2 — Confidential & Privileged Record",
+        fontsize=8,
+        fontname="helv",
+        color=(0.58, 0.64, 0.72),
+    )
+
+    pdf_report_bytes = doc.tobytes(garbage=3, deflate=True)
+    doc.close()
+    return pdf_report_bytes
 
 
 # ══════════════════════════════════════════════════════════

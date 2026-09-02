@@ -27,6 +27,7 @@ PATTERNS: Dict[str, re.Pattern] = {
     "NO_HP": re.compile(r"\b(?:\+62|62|0)8[1-9]\d{6,10}\b"),
     "EMAIL": re.compile(r"\b[\w.+-]+@[\w.-]+\.\w{2,}\b", re.IGNORECASE),
     "NPWP": re.compile(r"\b\d{2}\.\d{3}\.\d{3}\.\d-\d{3}\.\d{3}\b"),
+    "NO_REKENING": re.compile(r"(?i)\b(?:(?:no\.?\s*)?rek(?:ening)?|bank\s*(?:bca|mandiri|bni|bri|cimb|btn|danamon|permata)?|acc(?:ount)?(?:\s*no)?)\s*[:.-]?\s*(\d{10,16})\b"),
 }
 
 # ──────────────────────────────────────────────
@@ -148,6 +149,13 @@ def detect_pii_in_value(value: str, column_name: str = "",
     if col_lower in ("nama", "name", "nama_lengkap", "full_name", "employee_name"):
         if text and len(text) > 1:
             results["NAMA"] = [text]
+    elif col_lower in ("no_rekening", "nomor_rekening", "rekening", "no_rek", "bank_account", "account_number"):
+        # Match digits (10-16 digits) directly in bank column
+        digits_match = re.findall(r"\b\d{10,16}\b", text)
+        if digits_match:
+            results["NO_REKENING"] = digits_match
+        elif text:
+            results["NO_REKENING"] = [text]
     elif use_ner:
         names = detect_name_ner(text)
         if names:

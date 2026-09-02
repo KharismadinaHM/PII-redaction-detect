@@ -84,15 +84,22 @@ Referencing design specifications from:
 - [x] **Streamlit Multi-Format UI (`app.py`)**: Parallel CSV and PDF workflows, per-page classification badges, visual before/after page rendering, and redacted PDF export.
 - [x] **Hybrid Test PDF Generator (`generate_dummy_pdf.py`)**: Generates 3-page mixed PDF (2 native text pages + 1 rasterized scan image).
 
+### 9. Bank Account Detection & Compliance Audit Suite (`audit_logger.py`, `redactor.py`)
+- [x] **Bank Account Number Detection (`detector.py`)**: Regex with context prefixes (`rekening`, `no. rek`, `bank bca/mandiri/bni/bri`, `account no`) + column-aware rules.
+- [x] **Bank Account Masking (`redactor.py`)**: Dedicated masking function (`1234****90`) and full token replacement (`[REDACTED-NO_REKENING]`).
+- [x] **Structured Audit Logging (`audit_logger.py`)**: Automatic event logging in JSON Lines (`data/audit_trail.log`) with SHA-256 document hashing, timestamping, and entity metrics conforming to UU PDP.
+- [x] **PDF Compliance Audit Certificate (`redactor.py`)**: One-click downloadable official PDF compliance certificate with attestation statement and category breakdown.
+- [x] **Live Audit Log Viewer in UI (`app.py`)**: Interactive real-time audit ledger panel displayed on the Streamlit interface.
+
 ---
 
 ## Product Roadmap & Backlog
 
 ### Phase 2 Next Steps
 - [ ] Fine-tune custom NER models for Indonesian person names
-- [ ] Add Bank Account Number pattern detection (with contextual disambiguation against NIK)
-- [ ] PDF export for compliance audit reports
-- [ ] Structured file logging with audit trail metadata
+- [x] Add Bank Account Number pattern detection (with contextual disambiguation against NIK)
+- [x] PDF export for compliance audit reports
+- [x] Structured file logging with audit trail metadata
 
 ### Phase 3 — Human-in-the-Loop MVP
 - [ ] Interactive manual review & spot-check dashboard
@@ -103,7 +110,7 @@ Referencing design specifications from:
 
 ### Phase 4 — Enterprise Production
 - [ ] Single Sign-On (SSO) & Role-Based Access Control (RBAC)
-- [ ] Permanent database audit logging & compliance tracking
+- [x] Permanent database/file audit logging & compliance tracking
 - [ ] Automated HRIS system API integrations (Workday / SAP SuccessFactors)
 - [ ] Containerized deployment with Docker and Kubernetes
 
@@ -120,11 +127,12 @@ python -m spacy download en_core_web_sm
 
 # 3. Generate synthetic sample dataset (optional)
 python generate_dummy_data.py
+python generate_dummy_pdf.py
 
 # 4. Launch Streamlit Web UI
 streamlit run app.py
 
-# 5. Run automated test suite
+# 5. Run automated test suite (79 tests)
 pytest tests/ -v
 ```
 
@@ -134,21 +142,29 @@ pytest tests/ -v
 
 ```
 PII-redaction-detect/
-├── app.py                      # Streamlit UI entry point
-├── detector.py                 # Multi-rule PII detection module (Regex + NER)
-├── redactor.py                 # Redaction & masking transformation logic
-├── generate_dummy_data.py      # Synthetic employee dataset generator
+├── app.py                      # Streamlit UI dashboard (CSV + PDF + Audit viewer)
+├── detector.py                 # Multi-rule PII detection module (Regex + NER + Bank accounts)
+├── redactor.py                 # Redaction, masking & PDF compliance certificate generator
+├── audit_logger.py             # Structured JSON Lines compliance audit logger
+├── page_classifier.py          # PDF page classification (native-text vs image-based)
+├── ocr_engine.py               # Tesseract OCR engine with bounding box extraction
+├── generate_dummy_data.py      # Synthetic employee CSV dataset generator
+├── generate_dummy_pdf.py       # Synthetic hybrid PDF generator
 ├── requirements.txt            # Dependency specifications
 ├── PROGRESS.md                 # Project progress and roadmap tracker
 ├── .streamlit/
 │   └── config.toml             # Streamlit visual theme configuration
 ├── data/
-│   ├── dummy_input.csv         # Synthetic input records (auto-generated)
-│   └── output_redacted.csv     # Redacted output export (auto-generated)
+│   ├── dummy_input.csv         # Synthetic input CSV records
+│   ├── dummy_hybrid.pdf        # Synthetic hybrid PDF document
+│   ├── output_redacted.csv     # Redacted CSV export
+│   ├── output_redacted.pdf     # Redacted PDF export
+│   └── audit_trail.log         # Structured compliance audit ledger
 ├── tests/
-│   ├── test_detector.py        # Detector unit test suite (19 tests)
-│   ├── test_redactor.py        # Redactor unit test suite (13 tests)
-│   └── test_validation.py      # Targeted validation suite (37 tests)
+│   ├── test_detector.py        # Detector unit tests (23 tests)
+│   ├── test_redactor.py        # Redactor unit tests (15 tests)
+│   ├── test_validation.py      # Targeted validation suite (37 tests)
+│   └── test_audit_and_reporting.py # Audit logger & PDF report tests (4 tests)
 └── docs/
     ├── Prototype_Build_Guide_Antigravity.md
     ├── Solution_Brief_PII_Redaction_System.md
@@ -158,3 +174,4 @@ PII-redaction-detect/
 ---
 
 *Last updated: September 2, 2026*
+

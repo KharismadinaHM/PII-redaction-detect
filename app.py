@@ -256,6 +256,7 @@ PII_LABELS = {
     "EMAIL": "Email Address",
     "NPWP": "Tax ID (NPWP)",
     "NAMA": "Full Name",
+    "NO_REKENING": "Bank Account",
 }
 
 CHART_PALETTE = {
@@ -264,6 +265,7 @@ CHART_PALETTE = {
     "NO_HP": "#0284c7",
     "EMAIL": "#0d9488",
     "NPWP": "#475569",
+    "NO_REKENING": "#7c3aed",
 }
 
 
@@ -275,7 +277,7 @@ def _render_metric_grid(summary: dict) -> str:
         f'<div class="metric-label">Total PII Entities</div>'
         f'<div class="metric-val">{total}</div></div>'
     )
-    for ptype in ["NAMA", "NIK", "NO_HP", "EMAIL", "NPWP"]:
+    for ptype in ["NAMA", "NIK", "NO_HP", "EMAIL", "NPWP", "NO_REKENING"]:
         count = summary.get(ptype, 0)
         html += (
             f'<div class="metric-box">'
@@ -383,10 +385,22 @@ if uploaded_file is not None:
 
         if process_csv:
             from redactor import redact_dataframe
+            from audit_logger import log_redaction_event
             with st.spinner("Analyzing and redacting personal data..."):
                 df_redacted, detail, summary = redact_dataframe(
                     df_original, mode=redaction_mode, use_ner=use_ner
                 )
+                # Log audit event
+                csv_raw = uploaded_file.getvalue() if hasattr(uploaded_file, "getvalue") else None
+                log_redaction_event(
+                    document_name=uploaded_file.name,
+                    document_type="csv",
+                    total_records_or_pages=len(df_original),
+                    redaction_mode=redaction_mode,
+                    summary=summary,
+                    file_bytes=csv_raw,
+                )
+
             st.session_state.update({
                 "csv_df_redacted": df_redacted,
                 "csv_detail": detail,
@@ -433,14 +447,30 @@ if uploaded_file is not None:
                 else:
                     st.info("No personal data detected.")
 
-            st.markdown('<div class="section-title">Export Redacted File</div>', unsafe_allow_html=True)
-            c1, c2, c3 = st.columns([1, 2, 1])
-            with c2:
+            st.markdown('<div class="section-title">Export Redacted Files & Audit Artifacts</div>', unsafe_allow_html=True)
+            c1, c2 = st.columns(2)
+            with c1:
                 st.download_button(
                     label="Download Redacted CSV File",
                     data=df_redacted.to_csv(index=False).encode("utf-8"),
                     file_name="output_redacted.csv",
                     mime="text/csv",
+                    use_container_width=True,
+                )
+            with c2:
+                from redactor import generate_pdf_report
+                pdf_cert_bytes = generate_pdf_report(
+                    summary=summary,
+                    total_records_or_pages=len(df_original),
+                    document_name=uploaded_file.name,
+                    document_type="CSV",
+                    mode=redaction_mode,
+                )
+                st.download_button(
+                    label="Download PDF Compliance Certificate",
+                    data=pdf_cert_bytes,
+                    file_name="compliance_audit_certificate.pdf",
+                    mime="application/pdf",
                     use_container_width=True,
                 )
 
@@ -518,12 +548,22 @@ if uploaded_file is not None:
 
         if process_pdf:
             from redactor import redact_pdf
+            from audit_logger import log_redaction_event
             with st.spinner("Classifying pages, running OCR where needed, applying redaction..."):
                 try:
                     redacted_bytes, page_metadata, summary = redact_pdf(
                         pdf_bytes,
                         mode=redaction_mode,
                         use_ner=use_ner,
+                    )
+                    # Log audit event
+                    log_redaction_event(
+                        document_name=uploaded_file.name,
+                        document_type="pdf",
+                        total_records_or_pages=len(page_metadata),
+                        redaction_mode=redaction_mode,
+                        summary=summary,
+                        file_bytes=pdf_bytes,
                     )
                     st.session_state.update({
                         "pdf_redacted_bytes": redacted_bytes,
@@ -588,9 +628,9 @@ if uploaded_file is not None:
                         st.warning("Preview unavailable")
 
             # Download
-            st.markdown('<div class="section-title">Export Redacted Document</div>', unsafe_allow_html=True)
-            c1, c2, c3 = st.columns([1, 2, 1])
-            with c2:
+            st.markdown('<div class="section-title">Export Redacted Files & Audit Artifacts</div>', unsafe_allow_html=True)
+            c1, c2 = st.columns(2)
+            with c1:
                 st.download_button(
                     label="Download Redacted PDF File",
                     data=redacted_bytes,
@@ -598,6 +638,41 @@ if uploaded_file is not None:
                     mime="application/pdf",
                     use_container_width=True,
                 )
+            with c2:
+                from redactor import generate_pdf_report
+                pdf_cert_bytes = generate_pdf_report(
+                    summary=summary,
+                    total_records_or_pages=len(page_metadata),
+                    document_name=uploaded_file.name,
+                    document_type="PDF",
+                    mode=redaction_mode,
+                )
+                st.download_button(
+                    label="Download PDF Compliance Certificate",
+                    data=pdf_cert_bytes,
+                    file_name="compliance_audit_certificate.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                )
+
+    # ── Real-Time Audit Trail Viewer ──
+    from audit_logger import read_audit_log
+    audit_entries = read_audit_log(max_entries=10)
+    if audit_entries:
+        with st.expander("Compliance Audit Trail (Latest Operations)", expanded=False):
+            st.caption("Immutable JSON Lines ledger stored at data/audit_trail.log for UU PDP compliance.")
+            audit_table = [
+                {
+                    "Timestamp (UTC)": e["timestamp"][:19].replace("T", " "),
+                    "Document": e["document_name"],
+                    "Type": e["document_type"],
+                    "Mode": e["redaction_mode"],
+                    "Entities Protected": e["total_pii_entities_redacted"],
+                    "SHA-256 Hash": e["file_sha256"][:12] + "...",
+                }
+                for e in audit_entries
+            ]
+            st.dataframe(pd.DataFrame(audit_table), use_container_width=True)
 
 else:
     st.markdown("""
@@ -609,3 +684,23 @@ else:
         </div>
     </div>
     """, unsafe_allow_html=True)
+
+    # Show audit history even on empty state if log exists
+    from audit_logger import read_audit_log
+    audit_entries = read_audit_log(max_entries=10)
+    if audit_entries:
+        with st.expander("Compliance Audit Trail (Historical Log)", expanded=False):
+            st.caption("Immutable JSON Lines ledger stored at data/audit_trail.log for UU PDP compliance.")
+            audit_table = [
+                {
+                    "Timestamp (UTC)": e["timestamp"][:19].replace("T", " "),
+                    "Document": e["document_name"],
+                    "Type": e["document_type"],
+                    "Mode": e["redaction_mode"],
+                    "Entities Protected": e["total_pii_entities_redacted"],
+                    "SHA-256 Hash": e["file_sha256"][:12] + "...",
+                }
+                for e in audit_entries
+            ]
+            st.dataframe(pd.DataFrame(audit_table), use_container_width=True)
+
