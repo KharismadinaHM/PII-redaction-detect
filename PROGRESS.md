@@ -62,13 +62,18 @@ Referencing design specifications from:
 - [x] Expandable per-row PII detection breakdown
 - [x] Enterprise-grade styling: dark slate typography on crisp white cards, WCAG-compliant contrast, no emojis/emoticons
 
-### 6. Automated Unit Testing
+### 6. Automated Unit Testing (32 tests in test_detector.py + test_redactor.py)
 - [x] Valid 16-digit NIK pattern validation & boundary rejection (15/17 digits)
 - [x] Mobile phone format validation (08xx, +62, 62) and landline exclusion
 - [x] Email format matching with subaddressing support (`+` tags)
 - [x] Tax ID (NPWP) structure validation
 - [x] Non-PII column integrity checks (salary preservation)
 - [x] Verification of individual masking functions across all entity types
+
+### 7. Targeted Validation Test Suite (37 tests in test_validation.py)
+- [x] **NIK Regex — Exact 16-Digit Capture** (11 tests): standalone, embedded in text, all-zeros edge case, all-nines edge case, multiple NIKs in one string, rejection of 12/15/17 digits, alphabetic strings, mixed alphanumeric, empty strings
+- [x] **Phone Regex — 08xx and +62 Format Recognition** (16 tests): 0812/0852/0877/0895 prefixes, short 11-digit numbers, text-embedded detection, +62 with multiple operators, 62 (no plus), rejection of Jakarta/Bandung landlines, too-short numbers, plain text, non-Indonesian international numbers
+- [x] **Non-PII Column Preservation** (10 tests): salary intact in partial mask mode, salary intact in full redaction mode, salary-only DataFrame pass-through (zero PII detected), NIK/email/phone confirmed changed (proves PII columns are redacted), fully redacted tokens in full mode, row count preserved, column count preserved, non-PII address column unchanged
 
 ---
 
@@ -132,8 +137,9 @@ PII-redaction-detect/
 │   ├── dummy_input.csv         # Synthetic input records (auto-generated)
 │   └── output_redacted.csv     # Redacted output export (auto-generated)
 ├── tests/
-│   ├── test_detector.py        # Detector unit test suite
-│   └── test_redactor.py        # Redactor unit test suite
+│   ├── test_detector.py        # Detector unit test suite (19 tests)
+│   ├── test_redactor.py        # Redactor unit test suite (13 tests)
+│   └── test_validation.py      # Targeted validation suite (37 tests)
 └── docs/
     ├── Prototype_Build_Guide_Antigravity.md
     ├── Solution_Brief_PII_Redaction_System.md
