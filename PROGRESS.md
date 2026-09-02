@@ -5,11 +5,12 @@
 
 ---
 
-## Current Status: Phase 2 — Prototype (Completed & Verified)
+## Current Status: Phase 3 — Hybrid PDF Pipeline (Completed & Verified)
 
 Referencing design specifications from:
 - [`docs/Prototype_Build_Guide_Antigravity.md`](docs/Prototype_Build_Guide_Antigravity.md)
 - [`docs/Solution_Brief_PII_Redaction_System.md`](docs/Solution_Brief_PII_Redaction_System.md)
+- [`docs/OCR_Hybrid_Document_Build_Guide.md`](docs/OCR_Hybrid_Document_Build_Guide.md)
 
 ---
 
@@ -75,6 +76,14 @@ Referencing design specifications from:
 - [x] **Phone Regex — 08xx and +62 Format Recognition** (16 tests): 0812/0852/0877/0895 prefixes, short 11-digit numbers, text-embedded detection, +62 with multiple operators, 62 (no plus), rejection of Jakarta/Bandung landlines, too-short numbers, plain text, non-Indonesian international numbers
 - [x] **Non-PII Column Preservation** (10 tests): salary intact in partial mask mode, salary intact in full redaction mode, salary-only DataFrame pass-through (zero PII detected), NIK/email/phone confirmed changed (proves PII columns are redacted), fully redacted tokens in full mode, row count preserved, column count preserved, non-PII address column unchanged
 
+### 8. Hybrid PDF Processing & OCR Pipeline (`page_classifier.py`, `ocr_engine.py`)
+- [x] **Page Classifier (`page_classifier.py`)**: Automatic distinction between native-text and image-based/scanned pages via PyMuPDF.
+- [x] **OCR Engine (`ocr_engine.py`)**: Tesseract OCR wrapper extracting text and per-word bounding box coordinates.
+- [x] **OCR-Aware Detection (`detector.py`)**: Bounding box coordinate mapping for detected PII entities.
+- [x] **Hybrid PDF Redactor (`redactor.py`)**: Native redaction annotations for text pages + solid black bounding box overlay for scanned pages.
+- [x] **Streamlit Multi-Format UI (`app.py`)**: Parallel CSV and PDF workflows, per-page classification badges, visual before/after page rendering, and redacted PDF export.
+- [x] **Hybrid Test PDF Generator (`generate_dummy_pdf.py`)**: Generates 3-page mixed PDF (2 native text pages + 1 rasterized scan image).
+
 ---
 
 ## Product Roadmap & Backlog
@@ -87,10 +96,10 @@ Referencing design specifications from:
 
 ### Phase 3 — Human-in-the-Loop MVP
 - [ ] Interactive manual review & spot-check dashboard
-- [ ] Optical Character Recognition (OCR) for scanned ID cards and physical employment contracts
+- [x] Optical Character Recognition (OCR) for scanned ID cards and physical employment contracts
 - [ ] Consistent pseudo-anonymization / Tokenization (`[EMP_001]` consistent mapping across documents)
 - [ ] Role-based redaction policies (granular field visibility based on role)
-- [ ] Extended document parser support (XLSX, DOCX, PDF)
+- [x] Extended document parser support (CSV + Hybrid PDF)
 
 ### Phase 4 — Enterprise Production
 - [ ] Single Sign-On (SSO) & Role-Based Access Control (RBAC)

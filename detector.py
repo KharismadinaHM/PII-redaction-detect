@@ -8,10 +8,15 @@ Supported Entity Types:
 - EMAIL: Standard Internet Email Addresses
 - NPWP: Indonesian Tax Identification Numbers
 - NAMA: Person Names (via spaCy NER and column context heuristic)
+
+Supports two input sources:
+- Native text (from CSV or native-text PDF pages)
+- OCR text (from image-based PDF pages, with bounding box position data)
 """
 
 import re
-from typing import Dict, List, Tuple, Optional
+from dataclasses import dataclass, field
+from typing import Dict, List, Tuple, Optional, Any
 
 # ──────────────────────────────────────────────
 # Regular Expression Patterns for Indonesian PII
@@ -178,3 +183,114 @@ def analyze_dataframe(df, use_ner: bool = True) -> Tuple[dict, dict]:
                     summary[pii_type] = summary.get(pii_type, 0) + len(matches)
 
     return detail_per_cell, summary
+
+
+# ──────────────────────────────────────────────
+# OCR-Aware Detection (PDF Image-Based Pages)
+# ──────────────────────────────────────────────
+
+@dataclass
+class PIIMatch:
+    """A detected PII entity with optional bounding box position (from OCR)."""
+    pii_type: str               # e.g. "NIK", "NO_HP", "EMAIL"
+    matched_text: str           # The raw matched string
+    # Pixel bounding box (set only for OCR-sourced pages)
+    box_left: Optional[int] = None
+    box_top: Optional[int] = None
+    box_width: Optional[int] = None
+    box_height: Optional[int] = None
+    confidence: float = 100.0   # OCR confidence (100 for native text)
+
+
+def detect_pii_in_ocr_result(ocr_result: Any, use_ner: bool = True) -> List[PIIMatch]:
+    """
+    Runs PII detection on an OCRResult object and maps each detected entity
+    back to the word bounding boxes returned by Tesseract.
+
+    Args:
+        ocr_result: OCRResult dataclass from ocr_engine.py.
+        use_ner: Whether to apply spaCy NER for person names.
+
+    Returns:
+        List of PIIMatch objects with text and pixel coordinates.
+    """
+    from ocr_engine import find_word_boxes_for_match
+
+    full_text = ocr_result.full_text
+    pii_results: List[PIIMatch] = []
+
+    # Regex detection on full text
+    regex_hits = detect_pii_regex(full_text)
+    for pii_type, matches in regex_hits.items():
+        for match in matches:
+            words = find_word_boxes_for_match(match, ocr_result)
+            if words:
+                # Compute merged bounding box spanning all matched words
+                left = min(w.left for w in words)
+                top = min(w.top for w in words)
+                right = max(w.left + w.width for w in words)
+                bottom = max(w.top + w.height for w in words)
+                conf = sum(w.confidence for w in words) / len(words)
+                pii_results.append(PIIMatch(
+                    pii_type=pii_type,
+                    matched_text=match,
+                    box_left=left,
+                    box_top=top,
+                    box_width=right - left,
+                    box_height=bottom - top,
+                    confidence=conf,
+                ))
+            else:
+                # Match found in text but word not located (token boundary issues)
+                pii_results.append(PIIMatch(pii_type=pii_type, matched_text=match))
+
+    # NER for person names
+    if use_ner:
+        names = detect_name_ner(full_text)
+        for name in names:
+            words = find_word_boxes_for_match(name, ocr_result)
+            if words:
+                left = min(w.left for w in words)
+                top = min(w.top for w in words)
+                right = max(w.left + w.width for w in words)
+                bottom = max(w.top + w.height for w in words)
+                conf = sum(w.confidence for w in words) / len(words)
+                pii_results.append(PIIMatch(
+                    pii_type="NAMA",
+                    matched_text=name,
+                    box_left=left,
+                    box_top=top,
+                    box_width=right - left,
+                    box_height=bottom - top,
+                    confidence=conf,
+                ))
+            else:
+                pii_results.append(PIIMatch(pii_type="NAMA", matched_text=name))
+
+    return pii_results
+
+
+def detect_pii_in_native_pdf_page(page_text: str, use_ner: bool = True) -> List[PIIMatch]:
+    """
+    Runs PII detection on a native-text PDF page. Returns PIIMatch list
+    without pixel coordinates (text replacement handles redaction).
+
+    Args:
+        page_text: Extracted text string from a native PDF page.
+        use_ner: Whether to apply spaCy NER.
+
+    Returns:
+        List of PIIMatch objects (box coordinates will be None).
+    """
+    results: List[PIIMatch] = []
+    regex_hits = detect_pii_regex(page_text)
+    for pii_type, matches in regex_hits.items():
+        for match in matches:
+            results.append(PIIMatch(pii_type=pii_type, matched_text=match))
+
+    if use_ner:
+        names = detect_name_ner(page_text)
+        for name in names:
+            results.append(PIIMatch(pii_type="NAMA", matched_text=name))
+
+    return results

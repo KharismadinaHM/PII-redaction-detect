@@ -200,3 +200,162 @@ def generate_report(summary: Dict, total_rows: int) -> str:
     ])
 
     return "\n".join(lines)
+
+
+# ══════════════════════════════════════════════════════════
+# PDF Redaction Pipeline (Native Text + Image-Based Pages)
+# ══════════════════════════════════════════════════════════
+
+def redact_pdf_native_page(
+    page,  # fitz.Page
+    pii_matches: list,
+    mode: str = "mask",
+) -> None:
+    """
+    Redacts PII from a native-text PDF page using PyMuPDF redaction annotations.
+
+    For partial masking: replaces text in-place with masked equivalent.
+    For full redaction: applies solid black boxes over PII text regions.
+
+    Args:
+        page: PyMuPDF Page object (modified in place).
+        pii_matches: List of PIIMatch from detect_pii_in_native_pdf_page().
+        mode: "mask" or "full".
+    """
+    import fitz
+
+    for match in pii_matches:
+        # Find all text instances of this match on the page
+        text_instances = page.search_for(match.matched_text)
+        for rect in text_instances:
+            if mode == "full":
+                # Black redaction box
+                page.add_redact_annot(rect, fill=(0, 0, 0))
+            else:
+                # Mask: show masked text in redaction box
+                fn = MASK_FUNCTIONS.get(match.pii_type, lambda x: "****")
+                masked = fn(match.matched_text)
+                page.add_redact_annot(
+                    rect,
+                    text=masked,
+                    fontsize=8,
+                    fill=(1, 1, 1),  # white background
+                    text_color=(0.1, 0.1, 0.1),
+                )
+
+    page.apply_redactions()
+
+
+def redact_pdf_image_page(
+    page,          # fitz.Page
+    pii_matches: list,
+    image_dpi: int = 300,
+) -> None:
+    """
+    Redacts PII from an image-based PDF page by drawing solid black rectangles
+    over the pixel coordinates of each detected PII entity.
+
+    Coordinate conversion: OCR returns pixel coords at image_dpi; these must be
+    scaled to PDF point coordinates (72 pt/inch).
+
+    Args:
+        page: PyMuPDF Page object (modified in place).
+        pii_matches: List of PIIMatch with box_left/top/width/height.
+        image_dpi: The DPI used when rendering the page for OCR.
+    """
+    import fitz
+
+    scale = 72.0 / image_dpi  # convert pixels → PDF points
+
+    for match in pii_matches:
+        if match.box_left is None:
+            continue  # no position data available — skip
+
+        x0 = match.box_left * scale
+        y0 = match.box_top * scale
+        x1 = (match.box_left + match.box_width) * scale
+        y1 = (match.box_top + match.box_height) * scale
+
+        # Add a small padding around the box for robustness
+        padding = 2
+        rect = fitz.Rect(x0 - padding, y0 - padding, x1 + padding, y1 + padding)
+        page.draw_rect(rect, color=(0, 0, 0), fill=(0, 0, 0))
+
+
+def redact_pdf(
+    pdf_bytes: bytes,
+    mode: str = "mask",
+    use_ner: bool = True,
+    ocr_dpi: int = 300,
+) -> tuple:
+    """
+    Full end-to-end PDF redaction pipeline.
+
+    Processes each page:
+    1. Classifies as native-text or image-based (via page_classifier)
+    2. Extracts text (native) or runs OCR (image-based, via ocr_engine)
+    3. Detects PII on extracted/OCR text (via detector)
+    4. Applies appropriate redaction per page type
+    5. Returns redacted PDF bytes + per-page metadata + summary
+
+    Args:
+        pdf_bytes: Raw bytes of the input PDF.
+        mode: "mask" for partial masking, "full" for complete redaction.
+        use_ner: Whether to apply spaCy NER for person names.
+        ocr_dpi: DPI used for rendering image-based pages before OCR.
+
+    Returns:
+        Tuple of:
+        - redacted_pdf_bytes: Bytes of the output PDF.
+        - page_metadata: List of dicts with per-page results.
+        - summary: Dict[pii_type -> count].
+    """
+    import fitz
+    from page_classifier import classify_pdf_bytes
+    from ocr_engine import ocr_pdf_page
+    from detector import (
+        detect_pii_in_native_pdf_page,
+        detect_pii_in_ocr_result,
+    )
+
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    page_classifications = classify_pdf_bytes(pdf_bytes)
+
+    page_metadata = []
+    summary: dict = {}
+
+    for page_info in page_classifications:
+        page = doc[page_info.page_number]
+        page_meta = {
+            "page_number": page_info.page_number + 1,  # 1-indexed for display
+            "classification": page_info.classification,
+            "pii_found": [],
+        }
+
+        if page_info.classification == "native-text":
+            pii_matches = detect_pii_in_native_pdf_page(
+                page_info.native_text, use_ner=use_ner
+            )
+            redact_pdf_native_page(page, pii_matches, mode=mode)
+        else:
+            # Image-based: run OCR then pixel-level redaction
+            ocr_result = ocr_pdf_page(page, page_info.page_number, dpi=ocr_dpi)
+            pii_matches = detect_pii_in_ocr_result(ocr_result, use_ner=use_ner)
+            redact_pdf_image_page(page, pii_matches, image_dpi=ocr_dpi)
+
+        # Collect metadata and summary counts
+        for match in pii_matches:
+            page_meta["pii_found"].append({
+                "type": match.pii_type,
+                "text": match.matched_text,
+                "has_position": match.box_left is not None,
+            })
+            summary[match.pii_type] = summary.get(match.pii_type, 0) + 1
+
+        page_metadata.append(page_meta)
+
+    # Save to bytes
+    output_buf = doc.tobytes(garbage=3, deflate=True)
+    doc.close()
+
+    return output_buf, page_metadata, summary
