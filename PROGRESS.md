@@ -1,0 +1,145 @@
+# PROGRESS.md — PII Detection & Redaction Prototype
+
+> **This document tracks development progress and roadmap items for the PII Detection & Redaction Prototype.**
+> Future sessions and contributors can seamlessly resume development from this checkpoint.
+
+---
+
+## Current Status: Phase 2 — Prototype (Completed & Verified)
+
+Referencing design specifications from:
+- [`docs/Prototype_Build_Guide_Antigravity.md`](docs/Prototype_Build_Guide_Antigravity.md)
+- [`docs/Solution_Brief_PII_Redaction_System.md`](docs/Solution_Brief_PII_Redaction_System.md)
+
+---
+
+## Completed Milestones
+
+### 1. Project Architecture & Setup
+- [x] `app.py` — Streamlit UI entry point (enterprise high-contrast theme)
+- [x] `detector.py` — Multi-pattern PII detection module (Regex + spaCy NER)
+- [x] `redactor.py` — Masking & redaction transformation engine
+- [x] `generate_dummy_data.py` — Synthetic employee record generator (Faker `id_ID`)
+- [x] `requirements.txt` — Project dependencies
+- [x] `.streamlit/config.toml` — High-contrast enterprise theme configuration
+- [x] `tests/test_detector.py` — Detector unit test suite
+- [x] `tests/test_redactor.py` — Redactor unit test suite
+- [x] `data/` — Storage directory for input and output CSV datasets
+- [x] `docs/` — Technical specifications and solution briefs
+- [x] `PROGRESS.md` — Active development tracker
+
+### 2. PII Detection Engine (`detector.py`)
+- [x] National ID (NIK - 16 digits) Regex: `\b\d{16}\b`
+- [x] Mobile Phone (08xx, +62, 62) Regex: `\b(?:\+62|62|0)8[1-9]\d{6,10}\b`
+- [x] Email Address Regex: `\b[\w.+-]+@[\w.-]+\.\w{2,}\b`
+- [x] Tax ID (NPWP) Regex: `\b\d{2}\.\d{3}\.\d{3}\.\d-\d{3}\.\d{3}\b`
+- [x] spaCy NER (Named Entity Recognition) for person names (`PERSON` entities)
+- [x] Column context awareness (automatic name column identification; financial compensation/salary column preserved)
+- [x] Lazy-loading for language models (`en_core_web_sm` with fallback to `xx_ent_wiki_sm`)
+
+### 3. Redaction Engine (`redactor.py`)
+- [x] Partial Masking Mode: NIK -> `3201********0001`, Phone -> `0812****7890`, Email -> `bu**@gmail.com`, Name -> `B*** S***`, NPWP -> `12.***.***.* -***. ***`
+- [x] Full Redaction Mode: Replaces entities with typed placeholders (`[REDACTED-NIK]`, `[REDACTED-NAMA]`, etc.)
+- [x] Formatted compliance audit text report generator
+- [x] Preservation of non-PII columns (salary values remain intact)
+
+### 4. Synthetic Data Generator (`generate_dummy_data.py`)
+- [x] Generates 100 realistic fictitious employee records (customizable 10–500 rows)
+- [x] Supported schema: `nama` (name), `nik`, `no_hp` (phone), `email`, `alamat` (address), `gaji` (salary), `npwp`
+- [x] Indonesian locale formatting via Faker (`id_ID`)
+- [x] Outputs to `data/dummy_input.csv`
+
+### 5. Streamlit User Interface (`app.py`)
+- [x] CSV file upload with drag-and-drop support
+- [x] "Execute Redaction Process" trigger action
+- [x] Side-by-side and toggle table comparisons (Original vs Redacted)
+- [x] Aggregate detection statistics via high-contrast metric boxes + Plotly bar chart
+- [x] Redacted CSV download capability
+- [x] Sidebar configuration: toggle partial masking vs full redaction
+- [x] Sidebar configuration: toggle spaCy NER
+- [x] In-app synthetic dataset generator
+- [x] High-volume record advisory banner
+- [x] Expandable per-row PII detection breakdown
+- [x] Enterprise-grade styling: dark slate typography on crisp white cards, WCAG-compliant contrast, no emojis/emoticons
+
+### 6. Automated Unit Testing
+- [x] Valid 16-digit NIK pattern validation & boundary rejection (15/17 digits)
+- [x] Mobile phone format validation (08xx, +62, 62) and landline exclusion
+- [x] Email format matching with subaddressing support (`+` tags)
+- [x] Tax ID (NPWP) structure validation
+- [x] Non-PII column integrity checks (salary preservation)
+- [x] Verification of individual masking functions across all entity types
+
+---
+
+## Product Roadmap & Backlog
+
+### Phase 2 Next Steps
+- [ ] Fine-tune custom NER models for Indonesian person names
+- [ ] Add Bank Account Number pattern detection (with contextual disambiguation against NIK)
+- [ ] PDF export for compliance audit reports
+- [ ] Structured file logging with audit trail metadata
+
+### Phase 3 — Human-in-the-Loop MVP
+- [ ] Interactive manual review & spot-check dashboard
+- [ ] Optical Character Recognition (OCR) for scanned ID cards and physical employment contracts
+- [ ] Consistent pseudo-anonymization / Tokenization (`[EMP_001]` consistent mapping across documents)
+- [ ] Role-based redaction policies (granular field visibility based on role)
+- [ ] Extended document parser support (XLSX, DOCX, PDF)
+
+### Phase 4 — Enterprise Production
+- [ ] Single Sign-On (SSO) & Role-Based Access Control (RBAC)
+- [ ] Permanent database audit logging & compliance tracking
+- [ ] Automated HRIS system API integrations (Workday / SAP SuccessFactors)
+- [ ] Containerized deployment with Docker and Kubernetes
+
+---
+
+## Quickstart Instructions
+
+```bash
+# 1. Install dependencies
+pip install -r requirements.txt
+
+# 2. Download spaCy language model
+python -m spacy download en_core_web_sm
+
+# 3. Generate synthetic sample dataset (optional)
+python generate_dummy_data.py
+
+# 4. Launch Streamlit Web UI
+streamlit run app.py
+
+# 5. Run automated test suite
+pytest tests/ -v
+```
+
+---
+
+## Project Structure
+
+```
+PII-redaction-detect/
+├── app.py                      # Streamlit UI entry point
+├── detector.py                 # Multi-rule PII detection module (Regex + NER)
+├── redactor.py                 # Redaction & masking transformation logic
+├── generate_dummy_data.py      # Synthetic employee dataset generator
+├── requirements.txt            # Dependency specifications
+├── PROGRESS.md                 # Project progress and roadmap tracker
+├── .streamlit/
+│   └── config.toml             # Streamlit visual theme configuration
+├── data/
+│   ├── dummy_input.csv         # Synthetic input records (auto-generated)
+│   └── output_redacted.csv     # Redacted output export (auto-generated)
+├── tests/
+│   ├── test_detector.py        # Detector unit test suite
+│   └── test_redactor.py        # Redactor unit test suite
+└── docs/
+    ├── Prototype_Build_Guide_Antigravity.md
+    ├── Solution_Brief_PII_Redaction_System.md
+    └── OCR_Hybrid_Document_Build_Guide.md
+```
+
+---
+
+*Last updated: September 2, 2026*

@@ -1,0 +1,26 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Pytest / testing cache
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# macOS files
+.DS_Store
+
+# Streamlit run data (keep config.toml)
+.streamlit/secrets.toml
+
+# IDE
+.idea/
+.vscode/
